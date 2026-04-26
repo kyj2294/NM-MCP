@@ -16,7 +16,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ..api import award as award_api
-from ..api import bid as bid_api
 from ..api.client import NaraClient
 
 
@@ -34,9 +33,58 @@ def _yyyymm(date_str: str | None) -> str | None:
     if not date_str:
         return None
     s = str(date_str).replace("-", "").replace(":", "").replace(" ", "")
-    if len(s) >= 6:
-        return s[:6]
-    return None
+    return s[:6] if len(s) >= 6 else None
+
+
+def _month_ranges(period_months: int) -> list[tuple[str, str]]:
+    """오늘 기준 과거 period_months 개월을 1개월 단위 (date_from, date_to) 리스트로 반환."""
+    ranges: list[tuple[str, str]] = []
+    today = datetime.now()
+    # 최신 달부터 거슬러 올라감
+    end = today
+    for _ in range(period_months):
+        # 해당 달 첫날
+        start = end.replace(day=1)
+        ranges.append((start.strftime("%Y%m%d"), end.strftime("%Y%m%d")))
+        # 전 달 마지막날로 이동
+        end = start - timedelta(days=1)
+    return list(reversed(ranges))
+
+
+async def _fetch_awards_by_month(
+    client: NaraClient,
+    business_types: list[str],
+    period_months: int,
+    keyword: str | None = None,
+    company_name: str | None = None,
+    rows_per_month: int = 100,
+) -> list[dict[str, Any]]:
+    """월 단위로 쪼개서 낙찰 데이터를 수집한다.
+
+    한 번 요청의 최대 결과가 100건이므로, 기간 전체를 1개월 단위로 나눠
+    각 달마다 API를 호출해 더 완전한 데이터를 확보한다.
+    """
+    all_items: list[dict[str, Any]] = []
+    for date_from, date_to in _month_ranges(period_months):
+        for bt in business_types:
+            result = await award_api.search_award_list(
+                client,
+                bt,
+                keyword=keyword,
+                date_from=date_from,
+                date_to=date_to,
+                num_of_rows=rows_per_month,
+            )
+            items = result.get("items", [])
+            if company_name:
+                items = [
+                    i for i in items
+                    if company_name in (i.get("opengCorpNm") or i.get("scsbidCorpNm") or "")
+                ]
+                for i in items:
+                    i["_business_type"] = bt
+            all_items.extend(items)
+    return all_items
 
 
 async def analyze_market(
@@ -45,7 +93,6 @@ async def analyze_market(
     keyword: str,
     period_months: int = 12,
     business_type: str = "용역",
-    sample_limit: int = 500,
 ) -> dict[str, Any]:
     """시장 분석.
 
@@ -53,25 +100,17 @@ async def analyze_market(
         keyword: 분석 대상 키워드 (예: 'AI 챗봇')
         period_months: 분석 기간 (월)
         business_type: 업무구분 (단일). 'all' 시 4개 모두 합산.
-        sample_limit: API 호출 페이지 크기 (트래픽 절약)
 
     Returns:
         {
             "period": {"from": "20250426", "to": "20260426", "months": 12},
             "keyword": "...",
-            "summary": {
-                "total_awards": int,
-                "total_bid_count": int,
-                "avg_award_rate": float,    # 평균 낙찰가율 (%)
-                "avg_competition": float,   # 평균 경쟁률
-                "estimated_market_size": int,  # 추정 시장규모 (원)
-            },
-            "monthly_trend": [{"month": "202604", "count": 12, "amount": ...}, ...],
-            "top_institutions": [{"name": "...", "count": 5}, ...],
-            "top_winners": [{"name": "...", "count": 3, "total_amount": ...}, ...],
+            "summary": {...},
+            "monthly_trend": [...],
+            "top_institutions": [...],
+            "top_winners": [...],
         }
     """
-    # 기간 계산
     today = datetime.now()
     start = today - timedelta(days=30 * period_months)
     date_from = start.strftime("%Y%m%d")
@@ -81,59 +120,36 @@ async def analyze_market(
         ["물품", "용역", "공사", "외자"] if business_type == "all" else [business_type]
     )
 
-    # 낙찰 데이터 수집 (페이지네이션은 일단 첫 페이지만 — sample_limit 만큼)
-    all_awards: list[dict[str, Any]] = []
-    for bt in business_types:
-        result = await award_api.search_award_list(
-            client,
-            bt,
-            keyword=keyword,
-            date_from=date_from,
-            date_to=date_to,
-            num_of_rows=min(sample_limit, 100),
-        )
-        all_awards.extend(result.get("items", []))
+    # 1개월 단위로 쪼개서 수집
+    all_awards = await _fetch_awards_by_month(
+        client, business_types, period_months, keyword=keyword
+    )
 
     # 집계
-    monthly: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"count": 0, "total_amount": 0}
-    )
+    monthly: dict[str, dict[str, Any]] = defaultdict(lambda: {"count": 0, "total_amount": 0})
     institution_counter: Counter[str] = Counter()
-    winner_stats: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"count": 0, "total_amount": 0}
-    )
+    winner_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"count": 0, "total_amount": 0})
     award_rates: list[float] = []
+    competition_values: list[int] = []
     total_amount = 0
 
     for item in all_awards:
-        # 발주기관
         inst = item.get("dminsttNm") or item.get("ntceInsttNm") or "(미상)"
         institution_counter[inst] += 1
 
-        # 낙찰자
         winner = item.get("opengCorpNm") or item.get("scsbidCorpNm") or "(미상)"
-        # 낙찰가
-        award_amount = (
-            _safe_int(item.get("scsbidAmt"))
-            or _safe_int(item.get("opengAmt"))
-            or 0
-        )
-        # 추정가
-        estimated = _safe_int(item.get("presmptPrce")) or _safe_int(
-            item.get("bssamt")
-        )
+        award_amount = _safe_int(item.get("scsbidAmt")) or _safe_int(item.get("opengAmt")) or 0
+        estimated = _safe_int(item.get("presmptPrce")) or _safe_int(item.get("bssamt"))
 
         winner_stats[winner]["count"] += 1
         winner_stats[winner]["total_amount"] += award_amount
         total_amount += award_amount
 
-        # 낙찰가율
         if award_amount and estimated and estimated > 0:
             rate = (award_amount / estimated) * 100
-            if 30 <= rate <= 130:  # 이상치 제거
+            if 30 <= rate <= 130:
                 award_rates.append(rate)
 
-        # 월별
         month_key = (
             _yyyymm(item.get("opengDt"))
             or _yyyymm(item.get("scsbidDt"))
@@ -143,44 +159,23 @@ async def analyze_market(
             monthly[month_key]["count"] += 1
             monthly[month_key]["total_amount"] += award_amount
 
-    # 평균 경쟁률은 별도 필드가 있으면 사용, 없으면 추정
-    competition_values: list[int] = []
-    for item in all_awards:
-        n = _safe_int(item.get("prtcptCnum"))  # 참가업체수
+        n = _safe_int(item.get("prtcptCnum"))
         if n and n > 0:
             competition_values.append(n)
 
-    avg_competition = (
-        sum(competition_values) / len(competition_values) if competition_values else 0
-    )
     avg_award_rate = sum(award_rates) / len(award_rates) if award_rates else 0
+    avg_competition = sum(competition_values) / len(competition_values) if competition_values else 0
 
-    # 정렬해서 상위 N개만
-    top_inst = [
-        {"name": name, "count": cnt}
-        for name, cnt in institution_counter.most_common(10)
-    ]
+    top_inst = [{"name": n, "count": c} for n, c in institution_counter.most_common(10)]
     top_win = sorted(
-        [
-            {"name": name, **stats}
-            for name, stats in winner_stats.items()
-            if name != "(미상)"
-        ],
+        [{"name": n, **s} for n, s in winner_stats.items() if n != "(미상)"],
         key=lambda x: x["count"],
         reverse=True,
     )[:10]
-
-    monthly_sorted = [
-        {"month": m, **data}
-        for m, data in sorted(monthly.items())
-    ]
+    monthly_sorted = [{"month": m, **d} for m, d in sorted(monthly.items())]
 
     return {
-        "period": {
-            "from": date_from,
-            "to": date_to,
-            "months": period_months,
-        },
+        "period": {"from": date_from, "to": date_to, "months": period_months},
         "keyword": keyword,
         "business_types": business_types,
         "summary": {
@@ -192,10 +187,7 @@ async def analyze_market(
         "monthly_trend": monthly_sorted,
         "top_institutions": top_inst,
         "top_winners": top_win,
-        "_note": (
-            f"샘플 {len(all_awards)}건 기반. "
-            "정확한 분석을 위해서는 페이지네이션을 통해 더 많은 데이터 수집 필요."
-        ),
+        "_note": f"{period_months}개월을 1개월 단위로 분할 수집 — 총 {len(all_awards)}건.",
     }
 
 
@@ -216,22 +208,10 @@ async def analyze_competitor(
         ["물품", "용역", "공사", "외자"] if business_type == "all" else [business_type]
     )
 
-    matched: list[dict[str, Any]] = []
-    for bt in business_types:
-        # 회사명을 키워드로 직접 검색하기는 API가 지원 안 할 수 있어
-        # 우선 기간 내 데이터를 가져와 클라이언트 측에서 필터
-        result = await award_api.search_award_list(
-            client,
-            bt,
-            date_from=date_from,
-            date_to=date_to,
-            num_of_rows=100,
-        )
-        for item in result.get("items", []):
-            winner = item.get("opengCorpNm") or item.get("scsbidCorpNm") or ""
-            if company_name in winner:
-                item["_business_type"] = bt
-                matched.append(item)
+    # 1개월 단위로 쪼개서 수집 + 회사명 필터
+    matched = await _fetch_awards_by_month(
+        client, business_types, period_months, company_name=company_name
+    )
 
     # 집계
     field_counter: Counter[str] = Counter()
@@ -259,11 +239,7 @@ async def analyze_competitor(
 
     return {
         "company_name": company_name,
-        "period": {
-            "from": date_from,
-            "to": date_to,
-            "months": period_months,
-        },
+        "period": {"from": date_from, "to": date_to, "months": period_months},
         "summary": {
             "total_awards": len(matched),
             "total_amount": total_amount,
@@ -272,14 +248,9 @@ async def analyze_competitor(
             ),
             "by_business_type": dict(by_business),
         },
-        "top_categories": [
-            {"category": k, "count": v} for k, v in field_counter.most_common(10)
-        ],
+        "top_categories": [{"category": k, "count": v} for k, v in field_counter.most_common(10)],
         "top_clients": [
-            {"institution": k, "count": v}
-            for k, v in institution_counter.most_common(10)
+            {"institution": k, "count": v} for k, v in institution_counter.most_common(10)
         ],
-        "_note": (
-            "샘플 데이터 기반 부분 분석. 정확도를 위해서는 더 넓은 기간/페이지네이션 필요."
-        ),
+        "_note": f"{period_months}개월을 1개월 단위로 분할 수집 — 총 {len(matched)}건.",
     }

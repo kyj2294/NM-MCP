@@ -1,0 +1,13 @@
+{
+  "name": "narajangteo-pro",
+  "version": "0.1.0",
+  "description": "나라장터 6개 API 통합 MCP 서버",
+  "bin": {
+    "narajangteo-pro": "./bin/narajangteo-pro.js"
+  },
+  "keywords": ["mcp", "narajangteo", "g2b", "procurement", "korea"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -33,38 +33,34 @@ from .utils.nl_mapping import (
 # ─────────────────────────────────────────────────────────────
 logger = logging.getLogger("narajangteo_pro")
 
-# API 키가 없으면 설정 마법사를 띄워 입력받는다.
-from .setup_wizard import ensure_api_key
-ensure_api_key()
+# SETTINGS / STORE는 main() 진입 전까지 None.
+# 도구 함수 내에서 _settings() / _store()로 접근하면 첫 호출 시 lazy-init된다.
+# → import 시점에 tkinter GUI가 뜨거나 RuntimeError가 발생하지 않는다.
+_SETTINGS: Settings | None = None
+_STORE: StateStore | None = None
 
-# 환경설정 로드 (실패 시 명확한 에러)
-try:
-    SETTINGS = Settings.load()
-except RuntimeError as e:
-    # MCP 서버는 stderr로만 로그가 흐르므로 명확히 출력
-    import sys
-    print(f"[narajangteo-pro] 설정 오류: {e}", file=sys.stderr)
-    raise
-
-logging.basicConfig(level=SETTINGS.log_level)
-
-# 상태 저장소 초기화
-STORE = StateStore(SETTINGS.state_db_path)
-
-# MCP 서버 인스턴스
 mcp = FastMCP("narajangteo-pro")
+
+
+def _settings() -> Settings:
+    global _SETTINGS
+    if _SETTINGS is None:
+        _SETTINGS = Settings.load()
+    return _SETTINGS
+
+
+def _store() -> StateStore:
+    global _STORE
+    if _STORE is None:
+        _STORE = StateStore(_settings().state_db_path)
+    return _STORE
 
 
 # ─────────────────────────────────────────────────────────────
 # 헬퍼: 클라이언트 컨텍스트 매니저
 # ─────────────────────────────────────────────────────────────
 async def _with_client(coro_factory):
-    """API 클라이언트 라이프사이클 관리.
-
-    Usage:
-        return await _with_client(lambda c: bid_api.search_bid_list(c, ...))
-    """
-    async with NaraClient(SETTINGS) as client:
+    async with NaraClient(_settings()) as client:
         return await coro_factory(client)
 
 
@@ -105,26 +101,20 @@ async def search_procurement(
     Returns:
         {"items": [...], "total_count": int, "page_no": int}
     """
-    # shopping 도메인은 업무구분이 없음 — 별도 처리
     if domain == "shopping":
         limit = max(1, min(100, limit))
         try:
             from .api import shopping as shopping_api
             return await _with_client(
                 lambda c: shopping_api.search_shopping_items(
-                    c,
-                    keyword=keyword,
-                    company_name=institution,  # 종합쇼핑몰에선 institution을 공급업체명으로
-                    num_of_rows=limit,
+                    c, keyword=keyword, company_name=institution, num_of_rows=limit,
                 )
             )
         except NaraAPIError as e:
             return {"error": str(e), "code": e.code}
 
-    # 자연어 정규화
     bt = normalize_business_type(business_type) or "용역"
 
-    # 자연어 기간 처리
     if period:
         parsed = parse_relative_date_range(period)
         if parsed:
@@ -132,57 +122,36 @@ async def search_procurement(
 
     limit = max(1, min(100, limit))
 
-    # API 라우팅
     try:
         if domain == "bid":
             return await _with_client(
                 lambda c: bid_api.search_bid_list(
-                    c,
-                    bt,
-                    keyword=keyword,
-                    institution=institution,
-                    date_from=date_from,
-                    date_to=date_to,
-                    num_of_rows=limit,
+                    c, bt, keyword=keyword, institution=institution,
+                    date_from=date_from, date_to=date_to, num_of_rows=limit,
                 )
             )
         if domain == "award":
             from .api import award as award_api
             return await _with_client(
                 lambda c: award_api.search_award_list(
-                    c,
-                    bt,
-                    keyword=keyword,
-                    institution=institution,
-                    date_from=date_from,
-                    date_to=date_to,
-                    num_of_rows=limit,
+                    c, bt, keyword=keyword, institution=institution,
+                    date_from=date_from, date_to=date_to, num_of_rows=limit,
                 )
             )
         if domain == "contract":
             from .api import contract as contract_api
             return await _with_client(
                 lambda c: contract_api.search_contract_list(
-                    c,
-                    bt,
-                    keyword=keyword,
-                    institution=institution,
-                    date_from=date_from,
-                    date_to=date_to,
-                    num_of_rows=limit,
+                    c, bt, keyword=keyword, institution=institution,
+                    date_from=date_from, date_to=date_to, num_of_rows=limit,
                 )
             )
         if domain == "request":
             from .api import request as request_api
             return await _with_client(
                 lambda c: request_api.search_request_list(
-                    c,
-                    bt,
-                    keyword=keyword,
-                    institution=institution,
-                    date_from=date_from,
-                    date_to=date_to,
-                    num_of_rows=limit,
+                    c, bt, keyword=keyword, institution=institution,
+                    date_from=date_from, date_to=date_to, num_of_rows=limit,
                 )
             )
     except NaraAPIError as e:
@@ -207,14 +176,9 @@ async def get_procurement_detail(
         domain: 'bid'(입찰공고), 'award'(낙찰), 'contract'(계약),
                 'request'(조달요청), 'shopping'(종합쇼핑몰 품목)
         notice_no: 식별 번호
-            - bid/award: 입찰공고번호
-            - contract: 확정계약번호
-            - request: 조달요청번호
-            - shopping: 품목식별번호
         business_type: 업무구분 (shopping은 무시)
         notice_ord: 공고차수 (보통 '00')
     """
-    # shopping은 별도 분기
     if domain == "shopping":
         try:
             from .api import shopping as shopping_api
@@ -276,7 +240,6 @@ async def trace_procurement_lifecycle(
             - 'request': 조달요청번호
     """
     bt = normalize_business_type(business_type) or "용역"
-
     try:
         return await _with_client(
             lambda c: lifecycle_api.trace_lifecycle(
@@ -306,16 +269,10 @@ async def analyze_market(
         period_months: 분석 기간 — 기본 12개월
         business_type: 업무구분 또는 'all' (4개 합산)
     """
-    bt = (
-        "all"
-        if business_type == "all"
-        else (normalize_business_type(business_type) or "용역")
-    )
+    bt = "all" if business_type == "all" else (normalize_business_type(business_type) or "용역")
     try:
         return await _with_client(
-            lambda c: _analyze_market(
-                c, keyword=keyword, period_months=period_months, business_type=bt
-            )
+            lambda c: _analyze_market(c, keyword=keyword, period_months=period_months, business_type=bt)
         )
     except NaraAPIError as e:
         return {"error": str(e), "code": e.code}
@@ -339,18 +296,11 @@ async def analyze_competitor(
         period_months: 분석 기간
         business_type: 업무구분 또는 'all'
     """
-    bt = (
-        "all"
-        if business_type == "all"
-        else (normalize_business_type(business_type) or "용역")
-    )
+    bt = "all" if business_type == "all" else (normalize_business_type(business_type) or "용역")
     try:
         return await _with_client(
             lambda c: _analyze_competitor(
-                c,
-                company_name=company_name,
-                period_months=period_months,
-                business_type=bt,
+                c, company_name=company_name, period_months=period_months, business_type=bt,
             )
         )
     except NaraAPIError as e:
@@ -382,17 +332,15 @@ async def score_bid_fit(
     """
     bt = normalize_business_type(business_type) or "용역"
 
-    # 프로필 결정
     profile: dict[str, Any] | None = None
     if inline_profile:
         profile = {"name": "(inline)", **inline_profile}
     elif profile_id:
-        profile = STORE.load_profile(profile_id)
+        profile = _store().load_profile(profile_id)
         if not profile:
             return {"error": f"프로필 '{profile_id}'를 찾을 수 없습니다"}
     else:
-        # 저장된 프로필이 1개면 자동 사용
-        profiles = STORE.list_profiles()
+        profiles = _store().list_profiles()
         if len(profiles) == 1:
             profile = profiles[0]
         else:
@@ -407,11 +355,8 @@ async def score_bid_fit(
     try:
         return await _with_client(
             lambda c: _score_bid_fit(
-                c,
-                bid_notice_no=bid_notice_no,
-                business_type=bt,
-                profile=profile,
-                bid_notice_ord=notice_ord,
+                c, bid_notice_no=bid_notice_no, business_type=bt,
+                profile=profile, bid_notice_ord=notice_ord,
             )
         )
     except NaraAPIError as e:
@@ -437,48 +382,39 @@ async def manage_watchlist(
         - 'list': 등록된 키워드 목록
         - 'check_new': 등록한 키워드의 신규 공고 (마지막 확인 이후)
     """
+    store = _store()
     bt = normalize_business_type(business_type) if business_type else None
 
     if action == "add":
         if not keyword:
             return {"error": "add 액션에는 keyword가 필요합니다"}
-        wid = STORE.add_watch(keyword, bt, institution)
+        wid = store.add_watch(keyword, bt, institution)
         return {
-            "action": "add",
-            "watch_id": wid,
-            "keyword": keyword,
-            "business_type": bt,
-            "institution": institution,
+            "action": "add", "watch_id": wid, "keyword": keyword,
+            "business_type": bt, "institution": institution,
             "message": f"관심 키워드 등록: '{keyword}' (id={wid})",
         }
 
     if action == "remove":
         if watch_id is None:
             return {"error": "remove 액션에는 watch_id가 필요합니다"}
-        success = STORE.remove_watch(watch_id)
-        return {
-            "action": "remove",
-            "watch_id": watch_id,
-            "success": success,
-        }
+        return {"action": "remove", "watch_id": watch_id, "success": store.remove_watch(watch_id)}
 
     if action == "list":
-        watches = STORE.list_watches()
+        watches = store.list_watches()
         return {"action": "list", "count": len(watches), "watches": watches}
 
     if action == "check_new":
-        watches = STORE.list_watches()
+        watches = store.list_watches()
         all_new: list[dict[str, Any]] = []
 
-        async with NaraClient(SETTINGS) as client:
+        async with NaraClient(_settings()) as client:
             for w in watches:
                 w_bt = w.get("business_type") or "용역"
                 try:
                     result = await bid_api.search_bid_list(
-                        client,
-                        w_bt,
-                        keyword=w["keyword"],
-                        institution=w.get("institution"),
+                        client, w_bt,
+                        keyword=w["keyword"], institution=w.get("institution"),
                         num_of_rows=20,
                     )
                 except NaraAPIError as e:
@@ -487,17 +423,14 @@ async def manage_watchlist(
 
                 items = result.get("items", [])
                 bid_nos = [i.get("bidNtceNo") for i in items if i.get("bidNtceNo")]
-                unseen = STORE.filter_unseen(w["id"], bid_nos)
-
-                # 새 공고 표시
+                unseen = store.filter_unseen(w["id"], bid_nos)
                 new_items = [i for i in items if i.get("bidNtceNo") in unseen]
                 for item in new_items:
                     item["_watch_id"] = w["id"]
                     item["_watch_keyword"] = w["keyword"]
                     all_new.append(item)
-                    STORE.mark_seen(w["id"], item["bidNtceNo"])
-
-                STORE.update_last_checked(w["id"])
+                    store.mark_seen(w["id"], item["bidNtceNo"])
+                store.update_last_checked(w["id"])
 
         return {
             "action": "check_new",
@@ -533,23 +466,19 @@ async def manage_company_profile(
 
     revenue는 자연어 표현 가능: '50억', '100억원' 등.
     """
+    store = _store()
+
     if action == "save":
         if not profile_id or not name:
             return {"error": "save 액션에는 profile_id와 name이 필요합니다"}
         revenue_int = parse_money(revenue) if revenue is not None else None
-        STORE.save_profile(
-            profile_id,
-            name,
-            licenses=licenses,
-            certifications=certifications,
-            revenue=revenue_int,
-            prior_contracts=prior_contracts,
-            notes=notes,
+        store.save_profile(
+            profile_id, name,
+            licenses=licenses, certifications=certifications,
+            revenue=revenue_int, prior_contracts=prior_contracts, notes=notes,
         )
         return {
-            "action": "save",
-            "profile_id": profile_id,
-            "name": name,
+            "action": "save", "profile_id": profile_id, "name": name,
             "revenue_formatted": format_money(revenue_int),
             "message": f"프로필 '{profile_id}' 저장 완료",
         }
@@ -557,7 +486,7 @@ async def manage_company_profile(
     if action == "load":
         if not profile_id:
             return {"error": "load 액션에는 profile_id가 필요합니다"}
-        p = STORE.load_profile(profile_id)
+        p = store.load_profile(profile_id)
         if not p:
             return {"error": f"프로필 '{profile_id}' 없음"}
         if p.get("revenue"):
@@ -565,14 +494,13 @@ async def manage_company_profile(
         return {"action": "load", "profile": p}
 
     if action == "list":
-        profiles = STORE.list_profiles()
+        profiles = store.list_profiles()
         return {"action": "list", "count": len(profiles), "profiles": profiles}
 
     if action == "delete":
         if not profile_id:
             return {"error": "delete 액션에는 profile_id가 필요합니다"}
-        success = STORE.delete_profile(profile_id)
-        return {"action": "delete", "profile_id": profile_id, "success": success}
+        return {"action": "delete", "profile_id": profile_id, "success": store.delete_profile(profile_id)}
 
     return {"error": f"알 수 없는 action: {action}"}
 
@@ -581,14 +509,21 @@ async def manage_company_profile(
 # 엔트리포인트
 # ─────────────────────────────────────────────────────────────
 def main() -> None:
-    transport = SETTINGS.transport
+    # GUI / 키 확인은 main()에서만 — import 시점에는 절대 실행하지 않음
+    from .setup_wizard import ensure_api_key
+    ensure_api_key()
+
+    settings = _settings()
+    logging.basicConfig(level=settings.log_level)
+
+    transport = settings.transport
     if transport == "stdio":
         mcp.run(transport="stdio")
     elif transport in ("http", "streamable-http"):
         mcp.run(
             transport="streamable-http",
-            host=SETTINGS.http_host,
-            port=SETTINGS.http_port,
+            host=settings.http_host,
+            port=settings.http_port,
         )
     else:
         raise RuntimeError(f"지원하지 않는 트랜스포트: {transport}")
