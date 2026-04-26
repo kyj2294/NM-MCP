@@ -72,3 +72,97 @@ SQLite 기반으로 사용자 설정 데이터를 저장합니다.
 
 ```bash
 ~/.narajangteo-pro/state.db
+
+
+## 🚀 빠른 시작
+
+### 1. API 키 발급
+[공공데이터포털](https://www.data.go.kr)에서 다음 API들을 활용신청:
+- 조달청_나라장터 입찰공고정보서비스
+- 조달청_나라장터 낙찰정보서비스
+- 조달청_나라장터 계약정보서비스
+- 조달청_나라장터 계약과정통합공개서비스
+
+마이페이지 → 개발계정에서 **ServiceKey의 Decoding 값** 복사.
+
+### 2. 설치
+
+```bash
+# uvx (권장 - 설치 없이 실행)
+uvx narajangteo-pro
+
+# 또는 pip
+pip install narajangteo-pro
+```
+
+### 3. Claude Desktop 연결
+
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) 또는
+`%APPDATA%/Claude/claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "narajangteo-pro": {
+      "command": "uvx",
+      "args": ["narajangteo-pro@latest"],
+      "env": {
+        "NARA_API_KEY": "발급받은_디코딩_서비스키"
+      }
+    }
+  }
+}
+```
+
+Claude Desktop 재시작 후 자연어로 사용:
+
+> "최근 1개월 AI 챗봇 분야 시장 분석해줘"
+>
+> "공고번호 20260415123 어떤 진행 중이야? 사전규격부터 계약까지 다 보여줘"
+>
+> "우리 회사 프로필로 이 공고 입찰해도 될지 평가해줘"
+
+## 🛠 도구 (8개)
+
+| 도구 | 용도 |
+|---|---|
+| `search_procurement` | 입찰공고/낙찰/계약 통합 검색 |
+| `get_procurement_detail` | 상세 정보 조회 |
+| `trace_procurement_lifecycle` | ⭐ 조달 전 과정 추적 |
+| `analyze_market` | 시장 동향 분석 |
+| `analyze_competitor` | 경쟁사 활동 분석 |
+| `score_bid_fit` | 입찰 적합도 평가 + 권고 |
+| `manage_watchlist` | 관심 키워드 모니터링 |
+| `manage_company_profile` | 회사 프로필 관리 |
+
+## 🏗 아키텍처
+
+```
+┌─────────────────────────────────────────┐
+│ Claude Desktop / Cursor / VS Code       │
+└────────────────┬────────────────────────┘
+                 │ MCP (stdio | HTTP)
+┌────────────────▼────────────────────────┐
+│         narajangteo-pro                 │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  │
+│  │  Tools  │→ │Analytics│→ │ Storage │  │
+│  └────┬────┘  └────┬────┘  └─────────┘  │
+│       └───────┬────┘                    │
+│         ┌─────▼──────┐                  │
+│         │ API Client │                  │
+│         └─────┬──────┘                  │
+└───────────────┼─────────────────────────┘
+                │
+       ┌────────▼─────────┐
+       │  공공데이터포털   │
+       │  6개 나라장터 API │
+       └──────────────────┘
+```
+
+## 📂 프로젝트 구조
+
+자세한 내용은 [개발현황.md](./개발현황.md) 참조.
+
+## 📝 라이선스
+
+MIT
