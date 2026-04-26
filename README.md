@@ -73,7 +73,7 @@ SQLite 기반으로 사용자 설정 데이터를 저장합니다.
 ```bash
 ~/.narajangteo-pro/state.db
 
-
+---
 ## 🚀 빠른 시작
 
 ### 1. API 키 발급
