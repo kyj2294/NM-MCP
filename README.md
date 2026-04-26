@@ -1,4 +1,4 @@
-# narajangteo-pro
+# naramarket-pro-MCP
 
 나라장터 공공조달 API 6종을 통합한 MCP 서버입니다. Claude Desktop 등 MCP 클라이언트와 연결해 자연어로 입찰공고 검색, 시장 분석, 입찰 적합도 평가 등을 수행할 수 있습니다.
 
