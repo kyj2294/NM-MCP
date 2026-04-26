@@ -1,0 +1,50 @@
+[project]
+name = "narajangteo-pro"
+version = "0.1.0"
+description = "조달 의사결정을 같이 해주는 AI 동료 — 나라장터 6개 API 통합 + 분석 인텔리전스 MCP 서버"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "narajangteo-pro contributors" }]
+keywords = ["mcp", "narajangteo", "g2b", "procurement", "korea", "claude"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+narajangteo-pro = "narajangteo_pro.server:main"
+narajangteo-pro-setup = "narajangteo_pro.setup_wizard:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/narajangteo_pro"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["integration"]
+python_files = ["*.py"]
